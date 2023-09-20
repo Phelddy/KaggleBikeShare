@@ -20,9 +20,10 @@ bike_te <- bind_rows(bike_te %>% filter(weather != 4), isolated_weather)
 
 bike_tr %>% mutate(weather_cat = as_factor(weather)) %>% select(weather_cat)
 
+#recipe for putting together the first count or filtering
 my_recipe <- recipe(count ~ datetime + season + holiday + workingday
                     + weather + temp + humidity,
-                     data=bike) %>% # Set model formula
+                     data=bike_tr) %>% # Set model formula
   step_mutate(weather_cat = as_factor(weather)) %>% #changes weather from numeric to factor
   step_poly(temp, degree=2) %>% #Create polynomial expansion of temperature
   step_time(datetime, features=c("hour", "minute")) %>% #break out datetime
@@ -46,8 +47,81 @@ bike_predictions[bike_predictions < 0] <- 0
 bike_predictions <- floor(bike_predictions)
 
 sumbission <- bind_cols(bike_te %>% select(datetime), bike_predictions)
-sumbission <- sumbission %>% rename("datetime" = "datetime", "count" = ".pred") %>% mutate(datetime = as.character(datetime))
+sumbission <- sumbission %>% rename("datetime" = "datetime", "count" = ".pred")  %>% 
+  mutate(datetime = as.character(format(datetime)))
 
 
+vroom_write(sumbission, "./KaggleBikeShare/submission.csv", col_names = TRUE, delim = ", ")
+
+#Poisson regression work
+library(poissonreg)
+
+#poisson modifiations
+pois_mod <- poisson_reg() %>%
+  set_engine("glm")
+
+#workflow adding together this previous recipie
+bike_pois_workflow <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(pois_mod) %>%
+  fit(data = bike_tr)
+
+#predictions
+bike_predictions <- predict(bike_pois_workflow,
+                            new_data = bike_te)
+
+#setting everything to zero (unnecessary for poisson)
+bike_predictions[bike_predictions < 0] <- 0 
+bike_predictions <- floor(bike_predictions)
+
+#formats submissions properly
+sumbission <- bind_cols(bike_te %>% select(datetime), bike_predictions)
+sumbission <- sumbission %>% rename("datetime" = "datetime", "count" = ".pred")  %>% 
+  mutate(datetime = as.character(format(datetime)))
+
+#writes onto a csv
+vroom_write(sumbission, "./KaggleBikeShare/submission.csv", col_names = TRUE, delim = ", ")
+
+logbike_tr <- bike_tr %>% mutate(count = log(count))
+
+#penalized code
+#recipe for putting together the first count or filtering
+my_recipe <- recipe(count ~ datetime + season + holiday + workingday
+                    + weather + temp + humidity,
+                    data=logbike_tr) %>% # Set model formula
+  step_mutate(weather_cat = as_factor(weather)) %>% #changes weather from numeric to factor
+  step_poly(temp, degree=2) %>% #Create polynomial expansion of temperature
+  step_time(datetime, features=c("hour", "minute")) %>% #break out datetime
+  step_dummy(all_nominal_predictors()) %>% #create dummy variables (for weather)
+  step_zv(all_predictors()) %>% #removes zero-variance predictors
+  step_rm(weather, datetime) %>% #removes weather since it is now categorized
+  step_normalize(all_numeric_predictors())
+prepped_recipe <- prep(my_recipe) # Sets up the preprocessing using recipie
+bake(prepped_recipe, new_data = bike_te)   
+
+preg_model <- linear_reg(penalty = .05, mixture = .5) %>%
+  set_engine("glmnet")
+
+preg_wf <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(preg_model) %>%
+  fit(data = logbike_tr)
+
+predict(preg_wf, new_data = bike_te)
+
+#predictions
+bike_predictions <- exp(predict(preg_wf,
+                            new_data = bike_te))
+
+#setting everything to zero (unnecessary for poisson)
+bike_predictions[bike_predictions < 0] <- 0 
+bike_predictions <- floor(bike_predictions)
+
+#formats submissions properly
+sumbission <- bind_cols(bike_te %>% select(datetime), bike_predictions)
+sumbission <- sumbission %>% rename("datetime" = "datetime", "count" = ".pred")  %>% 
+  mutate(datetime = as.character(format(datetime)))
+
+#writes onto a csv
 vroom_write(sumbission, "./KaggleBikeShare/submission.csv", col_names = TRUE, delim = ", ")
 
