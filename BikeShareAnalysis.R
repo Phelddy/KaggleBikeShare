@@ -125,3 +125,48 @@ sumbission <- sumbission %>% rename("datetime" = "datetime", "count" = ".pred") 
 #writes onto a csv
 vroom_write(sumbission, "./KaggleBikeShare/submission.csv", col_names = TRUE, delim = ", ")
 
+#FRIDAY
+#additional testing on (9-22-2023)
+logbike_tr <- bike_tr %>% mutate(count = log(count))
+logbike_tr <- logbike_tr %>% select(-casual, -registered)
+
+#penalized code
+#recipe for putting together the first count or filtering
+my_recipe <- recipe(count ~ ., data=logbike_tr) %>% # Set model formula
+  step_mutate (weather=factor(weather, levels=1:3, labels=c("Sunny", "Mist", "Rain"))) %>%
+  step_mutate(season=factor(season, levels=1:4, labels=c("Spring", "Summer", "Fall", "Winter"))) %>%
+  step_mutate(holiday=factor(holiday, levels=c(0,1), labels=c("No", "Yes"))) %>%
+  step_mutate(workingday=factor(workingday,levels=c(0,1), labels=c("No", "Yes"))) %>%
+  step_time(datetime, features="hour") %>%
+  step_mutate(datetime_hour = as.factor(datetime_hour)) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_rm(datetime)
+prepped_recipe <- prep(my_recipe) # Sets up the preprocessing using recipie
+bake(prepped_recipe, new_data = bike_te)
+bake(prepped_recipe, new_data = logbike_tr)
+
+preg_model <- linear_reg(penalty = .01, mixture = 0) %>%
+  set_engine("glmnet")
+
+preg_wf <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(preg_model) %>%
+  fit(data = logbike_tr)
+
+predict(preg_wf, new_data = bike_te)
+
+#predictions
+bike_predictions <- exp(predict(preg_wf,
+                                new_data = bike_te))
+
+#setting everything to zero (unnecessary for poisson)
+bike_predictions[bike_predictions < 0] <- 0 
+bike_predictions <- floor(bike_predictions)
+
+#formats submissions properly
+sumbission <- bind_cols(bike_te %>% select(datetime), bike_predictions)
+sumbission <- sumbission %>% rename("datetime" = "datetime", "count" = ".pred")  %>% 
+  mutate(datetime = as.character(format(datetime)))
+
+#writes onto a csv
+vroom_write(sumbission, "./KaggleBikeShare/submission.csv", col_names = TRUE, delim = ", ")
