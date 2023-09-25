@@ -170,3 +170,64 @@ sumbission <- sumbission %>% rename("datetime" = "datetime", "count" = ".pred") 
 
 #writes onto a csv
 vroom_write(sumbission, "./KaggleBikeShare/submission.csv", col_names = TRUE, delim = ", ")
+
+
+#TUNING PARAMETERS 9/25/2023
+library(tidymodels)
+library(poissonreg)
+
+
+#penalized regression model
+preg_model <- linear_reg(penalty = tune(),
+                         mixture = tune()) %>%
+  set_engine("glmnet")
+
+
+preg_wf <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(preg_model)
+
+#creating the tuning grid. Choosing five levels for each for 25 options
+tuning_grid <- grid_regular(penalty(),
+                            mixture(),
+                            levels = 5)
+
+#kfold is vfold in tidy models
+folds <- vfold_cv(logbike_tr, v = 5, repeats = 1)
+
+#This will actually create all results for CV
+CV_results <- preg_wf %>%
+  tune_grid(resamples = folds,
+            grid = tuning_grid,
+            metrics = metric_set(rmse, mae, rsq))
+
+#plots CV results
+collect_metrics(CV_results) %>%
+  filter(.metric=="rmse") %>%
+  ggplot(data=., aes(x=penalty, y=mean, color = factor(mixture))) +
+  geom_line()
+
+#this allows for the running of the best possible model
+bestTune <- CV_results %>%
+  select_best("rmse")
+
+final_wf <-
+  preg_wf %>%
+  finalize_workflow(bestTune) %>%
+  fit(data=logbike_tr)
+
+bike_predictions <- exp(predict(final_wf,
+                                new_data = bike_te))
+
+#setting everything to zero (unnecessary for poisson)
+bike_predictions[bike_predictions < 0] <- 0 
+bike_predictions <- floor(bike_predictions)
+
+#formats submissions properly
+sumbission <- bind_cols(bike_te %>% select(datetime), bike_predictions)
+sumbission <- sumbission %>% rename("datetime" = "datetime", "count" = ".pred")  %>% 
+  mutate(datetime = as.character(format(datetime)))
+
+#writes onto a csv
+vroom_write(sumbission, "./KaggleBikeShare/submission.csv", col_names = TRUE, delim = ", ")
+
