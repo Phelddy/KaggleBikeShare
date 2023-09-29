@@ -302,3 +302,75 @@ sumbission <- sumbission %>% rename("datetime" = "datetime", "count" = ".pred") 
 
 #writes onto a csv
 vroom_write(sumbission, "./KaggleBikeShare/submission.csv", col_names = TRUE, delim = ", ")
+
+###9-29-2023
+###Random Forests
+library(tidyverse)
+library(tidymodels)
+library(vroom)
+
+logbike_tr <- bike_tr %>% mutate(count = log(count))
+logbike_tr <- logbike_tr %>% select(-casual, -registered)
+
+#penalized code
+#recipe for putting together the first count or filtering
+my_recipe <- recipe(count ~ ., data=logbike_tr) %>% # Set model formula
+  step_mutate (weather=factor(weather, levels=1:3, labels=c("Sunny", "Mist", "Rain"))) %>%
+  step_mutate(season=factor(season, levels=1:4, labels=c("Spring", "Summer", "Fall", "Winter"))) %>%
+  step_mutate(holiday=factor(holiday, levels=c(0,1), labels=c("No", "Yes"))) %>%
+  step_mutate(workingday=factor(workingday,levels=c(0,1), labels=c("No", "Yes"))) %>%
+  step_time(datetime, features="hour") %>%
+  step_mutate(datetime_hour = as.factor(datetime_hour)) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_rm(datetime)
+prepped_recipe <- prep(my_recipe) # Sets up the preprocessing using recipie
+bake(prepped_recipe, new_data = bike_te)
+bake(prepped_recipe, new_data = logbike_tr)
+
+forest_mod <- rand_forest(mtry = tune(),
+                          min_n = tune(), 
+                          trees = 1000) %>%
+  set_engine("ranger") %>%
+  set_mode("regression")
+
+## Create Workflow
+forest_wf <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(forest_mod)
+
+## Set up tuning Grid
+tuning_grid <- grid_regular(mtry(range = c(1, 15)),
+                            min_n(),
+                            levels = 2)
+
+## Set up K-fold CV
+#kfold is vfold in tidy models
+folds <- vfold_cv(logbike_tr, v = 5, repeats = 1)
+
+#This will actually create all results for CV
+CV_results <- forest_wf %>%
+  tune_grid(resamples = folds,
+            grid = tuning_grid,
+            metrics = metric_set(rmse, mae, rsq))
+
+## Find best tuning parameters
+bestTune <- CV_results %>%
+  select_best("rmse")
+
+
+## Finalize workflow and predict
+final_wf <-
+  forest_wf %>%
+  finalize_workflow(bestTune) %>%
+  fit(data=logbike_tr)
+
+bike_predictions <- exp(predict(final_wf,
+                                new_data = bike_te))
+
+#formats submissions properly
+sumbission <- bind_cols(bike_te %>% select(datetime), bike_predictions)
+sumbission <- sumbission %>% rename("datetime" = "datetime", "count" = ".pred")  %>% 
+  mutate(datetime = as.character(format(datetime)))
+
+#writes onto a csv
+vroom_write(sumbission, "./KaggleBikeShare/submission.csv", col_names = TRUE, delim = ", ")
