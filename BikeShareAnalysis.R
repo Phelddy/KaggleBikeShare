@@ -411,3 +411,72 @@ sumbission <- sumbission %>% rename("datetime" = "datetime", "count" = ".pred") 
 
 #writes onto a csv
 vroom_write(sumbission, "./KaggleBikeShare/submission.csv", col_names = TRUE, delim = ", ")
+
+##BART TESTING
+library(tidyverse)
+library(tidymodels)
+library(vroom)
+library(stacks)
+
+bike_tr <- vroom("./KaggleBikeShare/train.csv")
+bike_te <- vroom("./KaggleBikeShare/test.csv")
+
+#isolating problematic weather value and changing to 3
+isolated_weather <- bike_tr %>% filter(weather == 4) %>% mutate(weather = 3)
+#replacing row in original dataset
+bike_tr <- bind_rows(bike_tr %>% filter(weather != 4), isolated_weather)
+
+#isolating problematic weather value and changing to 3
+isolated_weather <- bike_te %>% filter(weather == 4) %>% mutate(weather = 3)
+#replacing row in original dataset
+bike_te <- bind_rows(bike_te %>% filter(weather != 4), isolated_weather)
+
+bike_tr <- bike_tr %>% mutate(year = year(datetime) - 2010)
+bike_te <- bike_te %>% mutate(year = year(datetime) - 2010)
+
+
+bike_tr %>% mutate(weather_cat = as_factor(weather)) %>% select(weather_cat)
+logbike_tr <- bike_tr %>% mutate(count = log(count))
+logbike_tr <- logbike_tr %>% select(-casual, -registered)
+
+my_recipe <- recipe(count ~ ., data=logbike_tr) %>% # Set model formula
+  step_mutate (weather=factor(weather, levels=1:3, labels=c("Sunny", "Mist", "Rain"))) %>%
+  step_mutate(season=factor(season, levels=1:4, labels=c("Spring", "Summer", "Fall", "Winter"))) %>%
+  step_mutate(holiday=factor(holiday, levels=c(0,1), labels=c("No", "Yes"))) %>%
+  step_mutate(workingday=factor(workingday,levels=c(0,1), labels=c("No", "Yes"))) %>%
+  step_time(datetime, features="hour") %>%
+  step_mutate(datetime_hour = as.factor(datetime_hour)) %>%
+  step_mutate(year = as.factor(year)) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_rm(datetime)
+prepped_recipe <- prep(my_recipe) # Sets up the preprocessing using recipie
+bake(prepped_recipe, new_data = bike_te)
+bake(prepped_recipe, new_data = logbike_tr)
+
+bart_mod <- bart(trees = 500,
+                 prior_terminal_node_coef = .95,
+                 prior_terminal_node_expo = 2,
+                 prior_outcome_range = 2) %>%
+  set_engine("dbarts") %>%
+  set_mode("regression")
+
+bart_wf <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(bart_mod)
+
+final_wf <-
+  bart_wf %>%
+  fit(data=logbike_tr)
+
+bike_predictions <- exp(predict(final_wf,
+                                new_data = bike_te))
+
+#formats submissions properly
+sumbission <- bind_cols(bike_te %>% select(datetime), bike_predictions)
+sumbission <- sumbission %>% rename("datetime" = "datetime", "count" = ".pred")  %>% 
+  mutate(datetime = as.character(format(datetime)))
+
+#writes onto a csv
+vroom_write(sumbission, "./KaggleBikeShare/submission.csv", col_names = TRUE, delim = ", ")
+
